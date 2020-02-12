@@ -12,6 +12,8 @@ import (
 )
 
 func server(w *gaio.Watcher) {
+	disconnected := make(map[string]struct{})
+
 	for {
 		results, err := w.WaitIO()
 		if err != nil {
@@ -20,14 +22,20 @@ func server(w *gaio.Watcher) {
 		}
 
 		for _, res := range results {
+			addr := res.Conn.LocalAddr().String()
+
+			if _, disconnected := disconnected[addr]; disconnected {
+				continue
+			}
+
 			if res.Error == nil {
 				var err error
 
 				switch res.Operation {
 				case gaio.OpRead: // read completion event
-					err = w.WriteTimeout(nil, res.Conn, res.Buffer[:res.Size], time.Now().Add(3 * time.Second))
+					err = w.WriteTimeout(nil, res.Conn, res.Buffer[:res.Size], time.Now().Add(3*time.Second))
 				case gaio.OpWrite: // write completion event
-					err = w.ReadTimeout(nil, res.Conn, res.Buffer[:cap(res.Buffer)], time.Now().Add(3 * time.Second))
+					err = w.ReadTimeout(nil, res.Conn, res.Buffer[:cap(res.Buffer)], time.Now().Add(3*time.Second))
 				}
 
 				if errors.Is(err, gaio.ErrWatcherClosed) {
@@ -38,11 +46,16 @@ func server(w *gaio.Watcher) {
 			}
 
 			if errors.Is(res.Error, io.EOF) {
+				disconnected[addr] = struct{}{}
+
 				log.Println("conn closed", res.Conn.RemoteAddr())
+
 				continue
 			}
 
 			if errors.Is(res.Error, gaio.ErrDeadline) {
+				disconnected[addr] = struct{}{}
+
 				if err := w.Free(res.Conn); err != nil {
 					break
 				}
@@ -51,6 +64,12 @@ func server(w *gaio.Watcher) {
 
 				continue
 			}
+		}
+
+		// optimized to memclr instruction
+
+		for addr := range disconnected {
+			delete(disconnected, addr)
 		}
 	}
 }
@@ -82,7 +101,7 @@ func main() {
 
 			log.Println("conn opened", conn.RemoteAddr())
 
-			if err := w.ReadTimeout(nil, conn, make([]byte, 4), time.Now().Add(3 * time.Second)); err != nil {
+			if err := w.ReadTimeout(nil, conn, make([]byte, 4), time.Now().Add(3*time.Second)); err != nil {
 				log.Println(err)
 				return
 			}
